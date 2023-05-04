@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -466,7 +467,8 @@ func (s *Sync) children(req *nodeRequest, object node) ([]*nodeRequest, error) {
 			}
 			// Check the presence of children concurrently
 			pending.Add(1)
-			go func(child childNode) {
+			child := child // copy for closure
+			gopool.Submit(func() {
 				defer pending.Done()
 
 				// If database says duplicate, then at least the trie node is present
@@ -485,7 +487,7 @@ func (s *Sync) children(req *nodeRequest, object node) ([]*nodeRequest, error) {
 					parent:   req,
 					callback: req.callback,
 				}
-			}(child)
+			})
 		}
 	}
 	pending.Wait()

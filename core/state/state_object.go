@@ -310,6 +310,7 @@ func (s *stateObject) updateTrie(db Database) (Trie, error) {
 		}
 		// If state snapshotting is active, cache the data til commit
 		if s.db.snap != nil {
+			s.db.snapMux.Lock()
 			if storage == nil {
 				// Retrieve the old storage map, if available, create a new one otherwise
 				if storage = s.db.snapStorage[s.addrHash]; storage == nil {
@@ -318,6 +319,7 @@ func (s *stateObject) updateTrie(db Database) (Trie, error) {
 				}
 			}
 			storage[crypto.HashData(hasher, key[:])] = v // v will be nil if it's deleted
+			s.db.snapMux.Unlock()
 		}
 		usedStorage = append(usedStorage, common.CopyBytes(key[:])) // Copy needed for closure
 	}
@@ -357,6 +359,9 @@ func (s *stateObject) commitTrie(db Database) (*trie.NodeSet, error) {
 	}
 	// If nothing changed, don't bother with committing anything
 	if tr == nil {
+		if s.trie != nil && s.data.Root != types.EmptyRootHash {
+			db.CacheStorage(s.addrHash, s.data.Root, s.trie)
+		}
 		return nil, nil
 	}
 	// Track the amount of time wasted on committing the storage trie
@@ -365,6 +370,9 @@ func (s *stateObject) commitTrie(db Database) (*trie.NodeSet, error) {
 	}
 	root, nodes := tr.Commit(false)
 	s.data.Root = root
+	if s.data.Root != types.EmptyRootHash {
+		db.CacheStorage(s.addrHash, s.data.Root, s.trie)
+	}
 	return nodes, nil
 }
 
