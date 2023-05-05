@@ -17,13 +17,16 @@
 package core
 
 import (
-	"sync/atomic"
-
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
+)
+
+const (
+	prefetchThread = 3
+	checkInterval  = 10
 )
 
 // statePrefetcher is a basic Prefetcher, which blindly executes a block on top
@@ -47,38 +50,48 @@ func newStatePrefetcher(config *params.ChainConfig, bc *BlockChain, engine conse
 // Prefetch processes the state changes according to the Ethereum rules by running
 // the transaction messages using the statedb, but any changes are discarded. The
 // only goal is to pre-cache transaction signatures and state trie nodes.
-func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interrupt *uint32) {
+func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interruptCh <-chan struct{}) {
 	var (
-		header       = block.Header()
-		gaspool      = new(GasPool).AddGas(block.GasLimit())
-		blockContext = NewEVMBlockContext(header, p.bc, nil, p.config, statedb)
-		evm          = vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
-		signer       = types.MakeSigner(p.config, header.Number)
+		header = block.Header()
+		signer = types.MakeSigner(p.config, header.Number)
 	)
-	// Iterate over and process the individual transactions
-	byzantium := p.config.IsByzantium(block.Number())
-	for i, tx := range block.Transactions() {
-		// If block precaching was interrupted, abort
-		if interrupt != nil && atomic.LoadUint32(interrupt) == 1 {
+	transactions := block.Transactions()
+	txChan := make(chan int, prefetchThread)
+	// No need to execute the first batch, since the main processor will do it.
+	for i := 0; i < prefetchThread; i++ {
+		go func() {
+			newStatedb := statedb.Copy()
+			gaspool := new(GasPool).AddGas(block.GasLimit())
+			blockContext := NewEVMBlockContext(header, p.bc, nil, p.config, newStatedb)
+			evm := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
+			// Iterate over and process the individual transactions
+			for {
+				select {
+				case txIndex := <-txChan:
+					tx := transactions[txIndex]
+					// Convert the transaction into an executable message and pre-cache its sender
+					msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+					if err != nil {
+						return // Also invalid block, bail out
+					}
+					statedb.SetTxContext(tx.Hash(), i)
+					precacheTransaction(msg, p.config, gaspool, newStatedb, header, evm)
+
+				case <-interruptCh:
+					// If block precaching was interrupted, abort
+					return
+				}
+			}
+		}()
+	}
+
+	// it should be in a separate goroutine, to avoid blocking the critical path.
+	for i := 0; i < len(transactions); i++ {
+		select {
+		case txChan <- i:
+		case <-interruptCh:
 			return
 		}
-		// Convert the transaction into an executable message and pre-cache its sender
-		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
-		if err != nil {
-			return // Also invalid block, bail out
-		}
-		statedb.SetTxContext(tx.Hash(), i)
-		if err := precacheTransaction(msg, p.config, gaspool, statedb, header, evm); err != nil {
-			return // Ugh, something went horribly wrong, bail out
-		}
-		// If we're pre-byzantium, pre-load trie nodes for the intermediate root
-		if !byzantium {
-			statedb.IntermediateRoot(true)
-		}
-	}
-	// If were post-byzantium, pre-load trie nodes for the final root hash
-	if byzantium {
-		statedb.IntermediateRoot(true)
 	}
 }
 
