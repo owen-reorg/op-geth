@@ -802,6 +802,7 @@ func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase co
 			parentBlock := w.eth.BlockChain().GetBlockByHash(parent.Hash())
 			state, release, err = historicalBackend.StateAtBlock(context.Background(), parentBlock, ^uint64(0), nil, false, false)
 			state = state.Copy()
+			state.EnableWriteOnSharedStorage()
 			release()
 		}
 	}
