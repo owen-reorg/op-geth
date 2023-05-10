@@ -447,7 +447,11 @@ func (db *Database) Reference(child common.Hash, parent common.Hash) {
 
 	db.reference(child, parent)
 	var roughDirtiesSize = common.StorageSize((len(db.dirties)-1)*cachedNodeSize) + db.dirtiesSize + db.childrenSize - common.StorageSize(len(db.dirties[common.Hash{}].children)*(common.HashLength+2))
-	var roughPreimagesSize = db.preimages.size()
+	var roughPreimagesSize = common.StorageSize(0)
+	if db.preimages != nil {
+		roughPreimagesSize = db.preimages.size()
+	}
+
 	db.lock.Unlock()
 
 	db.sizeLock.Lock()

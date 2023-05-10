@@ -1079,10 +1079,10 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 					if err := s.snaps.Update(root, parent, s.convertAccountSet(s.stateObjectsDestruct), s.snapAccounts, s.snapStorage); err != nil {
 						log.Warn("Failed to update snapshot tree", "from", parent, "to", root, "err", err)
 					}
-					// Keep 128 diff layers in the memory, persistent layer is 129th.
+					// Keep n diff layers in the memory, persistent layer is (n+1))th.
 					// - head layer is paired with HEAD state
 					// - head-1 layer is paired with HEAD-1 state
-					// - head-127 layer(bottom-most diff layer) is paired with HEAD-127 state
+					// - head-(n-1) layer(bottom-most diff layer) is paired with HEAD-(n-1) state
 					if err := s.snaps.Cap(root, s.snaps.CapLimit()); err != nil {
 						log.Warn("Failed to cap snapshot tree", "root", root, "layers", s.snaps.CapLimit(), "err", err)
 					}
@@ -1098,8 +1098,9 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 
 	commitRes := make(chan error, len(commitFuncs))
 	for i := 0; i < len(commitFuncs); i++ {
+		commitFunc := commitFuncs[i]
 		gopool.Submit(func() {
-			commitRes <- commitFuncs[i]()
+			commitRes <- commitFunc()
 		})
 	}
 	for i := 0; i < len(commitFuncs); i++ {

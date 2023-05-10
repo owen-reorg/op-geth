@@ -17,6 +17,7 @@
 package core
 
 import (
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -59,7 +60,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 	txChan := make(chan int, prefetchThread)
 	// No need to execute the first batch, since the main processor will do it.
 	for i := 0; i < prefetchThread; i++ {
-		go func() {
+		gopool.Submit(func() {
 			newStatedb := statedb.Copy()
 			gaspool := new(GasPool).AddGas(block.GasLimit())
 			blockContext := NewEVMBlockContext(header, p.bc, nil, p.config, newStatedb)
@@ -74,7 +75,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 					if err != nil {
 						return // Also invalid block, bail out
 					}
-					statedb.SetTxContext(tx.Hash(), i)
+					newStatedb.SetTxContext(tx.Hash(), i)
 					precacheTransaction(msg, p.config, gaspool, newStatedb, header, evm)
 
 				case <-interruptCh:
@@ -82,7 +83,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	// it should be in a separate goroutine, to avoid blocking the critical path.

@@ -245,11 +245,14 @@ func (b *batch) Write() error {
 	defer b.db.lock.Unlock()
 
 	for _, keyvalue := range b.writes {
-		if keyvalue.delete {
-			delete(b.db.db, string(keyvalue.key))
-			continue
+		if b.db.db != nil {
+			if keyvalue.delete {
+				delete(b.db.db, string(keyvalue.key))
+				continue
+			}
+
+			b.db.db[string(keyvalue.key)] = keyvalue.value
 		}
-		b.db.db[string(keyvalue.key)] = keyvalue.value
 	}
 	return nil
 }
