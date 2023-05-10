@@ -219,6 +219,7 @@ type BlockChain struct {
 	quit          chan struct{}  // shutdown signal, closed in Stop.
 	running       int32          // 0 if chain is running, 1 when stopped
 	procInterrupt int32          // interrupt signaler for block processing
+	commitLock    sync.Mutex     // CommitLock is used to protect above field from being modified concurrently
 
 	engine     consensus.Engine
 	validator  Validator // Block and state validator interface
@@ -234,6 +235,9 @@ type BlockChain struct {
 func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis, overrides *ChainOverrides, engine consensus.Engine, vmConfig vm.Config, shouldPreserve func(header *types.Header) bool, txLookupLimit *uint64) (*BlockChain, error) {
 	if cacheConfig == nil {
 		cacheConfig = defaultCacheConfig
+	}
+	if cacheConfig.TriesInMemory == 0 {
+		cacheConfig.TriesInMemory = TriesInMemory
 	}
 
 	// Open trie database with provided config
@@ -1346,26 +1350,12 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		state.StopPrefetcher()
 		return consensus.ErrUnknownAncestor
 	}
-	// Make sure no inconsistent state is leaked during insertion
-	externTd := new(big.Int).Add(block.Difficulty(), ptd)
 
-	commitFuncs := []func() error{
+	postCommitFuncs := []func() error{
 		func() error {
-			// Irrelevant of the canonical status, write the block itself to the database.
-			//
-			// Note all the components of block(td, hash->number map, header, body, receipts)
-			// should be written atomically. BlockBatch is used for containing all components.
-			blockBatch := bc.db.NewBatch()
-			rawdb.WriteTd(blockBatch, block.Hash(), block.NumberU64(), externTd)
-			rawdb.WriteBlock(blockBatch, block)
-			rawdb.WriteReceipts(blockBatch, block.Hash(), block.NumberU64(), receipts)
-			rawdb.WritePreimages(blockBatch, state.Preimages())
-			if err := blockBatch.Write(); err != nil {
-				log.Crit("Failed to write block into disk", "err", err)
-			}
-			return nil
-		},
-		func() error {
+			bc.commitLock.Lock()
+			defer bc.commitLock.Unlock()
+
 			root := block.Root()
 			// If we're running an archive node, always flush
 			if bc.cacheConfig.TrieDirtyDisabled {
@@ -1421,9 +1411,30 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 			}
 			return nil
 		},
+	}
+
+	commitFuncs := []func() error{
+		func() error {
+			// Make sure no inconsistent state is leaked during insertion
+			externTd := new(big.Int).Add(block.Difficulty(), ptd)
+
+			// Irrelevant of the canonical status, write the block itself to the database.
+			//
+			// Note all the components of block(td, hash->number map, header, body, receipts)
+			// should be written atomically. BlockBatch is used for containing all components.
+			blockBatch := bc.db.NewBatch()
+			rawdb.WriteTd(blockBatch, block.Hash(), block.NumberU64(), externTd)
+			rawdb.WriteBlock(blockBatch, block)
+			rawdb.WriteReceipts(blockBatch, block.Hash(), block.NumberU64(), receipts)
+			rawdb.WritePreimages(blockBatch, state.Preimages())
+			if err := blockBatch.Write(); err != nil {
+				log.Crit("Failed to write block into disk", "err", err)
+			}
+			return nil
+		},
 		func() error {
 			// Commit all cached state changes into underlying memory database.
-			_, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
+			_, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()), postCommitFuncs...)
 			if err != nil {
 				return err
 			}
