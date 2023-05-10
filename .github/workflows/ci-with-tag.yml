@@ -49,14 +49,14 @@ jobs:
           OP_GETH_IMAGE_REPO: op-geth
         run: |
 
-          OP_NODE_IMAGE_NAME="${ECR_REGISTRY_ID}.dkr.ecr.${REGION}.amazonaws.com/$OP_GETH_IMAGE_REPO:${GITHUB_REF#refs/*/}"
+          OP_GETH_IMAGE_NAME="${ECR_REGISTRY_ID}.dkr.ecr.${REGION}.amazonaws.com/$OP_GETH_IMAGE_REPO:${GITHUB_REF#refs/*/}"
 
           aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY_ID}.dkr.ecr.${REGION}.amazonaws.com
 
-          aws ecr --region $REGION describe-repositories --registry-id $ECR_REGISTRY_ID --repository-names $OP_GETH_IMAGE_REPO || aws ecr --region $REGION create-repository --registry-id $ECR_REGISTRY_ID --repository-name $OP_PROPOSER_IMAGE_REPO
+          aws ecr --region $REGION describe-repositories --registry-id $ECR_REGISTRY_ID --repository-names $OP_GETH_IMAGE_REPO || aws ecr --region $REGION create-repository --registry-id $ECR_REGISTRY_ID --repository-name $OP_GETH_IMAGE_REPO
           aws ecr --region $REGION set-repository-policy --registry-id $ECR_REGISTRY_ID --repository-name $OP_GETH_IMAGE_REPO --policy-text file:///home/runner/repo-access-permissions.json
 
-          docker build --build-arg GIT_TOKEN=${{ secrets.GO_MODULES_TOKEN }} -t $OP_NODE_IMAGE_NAME -f Dockerfile .
-          docker push $OP_GETH_IMAGE_REPO
+          docker build --build-arg GIT_TOKEN=${{ secrets.GO_MODULES_TOKEN }} -t $OP_GETH_IMAGE_NAME -f Dockerfile .
+          docker push $OP_GETH_IMAGE_NAME
 
  
