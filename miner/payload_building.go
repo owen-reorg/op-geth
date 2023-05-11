@@ -174,7 +174,7 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 	// enough to run. The empty payload can at least make sure there is something
 	// to deliver for not missing slot.
 	start := time.Now()
-	empty, _, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, true, args.Transactions, args.GasLimit)
+	empty, _, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, true, nil, args.GasLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -203,9 +203,11 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 			case <-timer.C:
 				start := time.Now()
 				block, fees, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, false, args.Transactions, args.GasLimit)
-				log.Debug("Built updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
 				if err == nil {
+					log.Debug("Built updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
 					payload.update(block, fees, time.Since(start))
+				} else {
+					log.Error("Failed to build updated payload", "id", payload.id, "err", err)
 				}
 				timer.Reset(w.recommit)
 			case <-payload.stop:
