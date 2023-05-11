@@ -174,7 +174,7 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 	// enough to run. The empty payload can at least make sure there is something
 	// to deliver for not missing slot.
 	start := time.Now()
-	empty, _, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, true, nil, args.GasLimit)
+	empty, _, err := w.getSealingEmptyBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, true, args.Transactions, args.GasLimit)
 	if err != nil {
 		return nil, err
 	}

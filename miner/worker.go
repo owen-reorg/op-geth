@@ -1262,6 +1262,31 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 	return nil
 }
 
+// getSealingEmptyBlock generates the sealing block based on the given parameters.
+// The generation result will be passed back via the given channel no matter
+// the generation itself succeeds or not.
+func (w *worker) getSealingEmptyBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions types.Transactions, gasLimit *uint64) (*types.Block, *big.Int, error) {
+	params := &generateParams{
+		timestamp:   timestamp,
+		forceTime:   true,
+		parentHash:  parent,
+		coinbase:    coinbase,
+		random:      random,
+		withdrawals: withdrawals,
+		noUncle:     true,
+		noTxs:       noTxs,
+		txs:         transactions,
+		gasLimit:    gasLimit,
+	}
+
+	select {
+	case <-w.exitCh:
+		return nil, nil, errors.New("miner closed")
+	default:
+		return w.generateWork(params)
+	}
+}
+
 // getSealingBlock generates the sealing block based on the given parameters.
 // The generation result will be passed back via the given channel no matter
 // the generation itself succeeds or not.
