@@ -176,6 +176,7 @@ type newPayloadResult struct {
 	err   error
 	block *types.Block
 	fees  *big.Int
+	env   *environment
 }
 
 // getWorkReq represents a request for getting a new sealing work with provided parameters.
@@ -576,11 +577,12 @@ func (w *worker) mainLoop() {
 			w.commitWork(req.interrupt, req.noempty, req.timestamp)
 
 		case req := <-w.getWorkCh:
-			block, fees, err := w.generateWork(req.params)
+			block, fees, env, err := w.generateWork(req.params)
 			req.result <- &newPayloadResult{
 				err:   err,
 				block: block,
 				fees:  fees,
+				env:   env,
 			}
 		case ev := <-w.chainSideCh:
 			// Short circuit for duplicate side blocks
@@ -795,19 +797,24 @@ func (w *worker) resultLoop() {
 func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase common.Address) (*environment, error) {
 	// Retrieve the parent state to execute on top and start a prefetcher for
 	// the miner to speed block sealing up a bit.
-	state, err := w.chain.StateAt(parent.Root)
-	if err != nil && w.chainConfig.Optimism != nil { // Allow the miner to reorg its own chain arbitrarily deep
-		if historicalBackend, ok := w.eth.(BackendWithHistoricalState); ok {
-			var release tracers.StateReleaseFunc
-			parentBlock := w.eth.BlockChain().GetBlockByHash(parent.Hash())
-			state, release, err = historicalBackend.StateAtBlock(context.Background(), parentBlock, ^uint64(0), nil, false, false)
-			state = state.Copy()
-			state.EnableWriteOnSharedStorage()
-			release()
+	pendingBlock, state := w.pending()
+	if state == nil || pendingBlock == nil || pendingBlock.Root() != parent.Root {
+		log.Debug("worker snapshot mismatch, falling back to chain state", "state_root", parent.Root)
+		nState, err := w.chain.StateAt(parent.Root)
+		if err != nil && w.chainConfig.Optimism != nil { // Allow the miner to reorg its own chain arbitrarily deep
+			if historicalBackend, ok := w.eth.(BackendWithHistoricalState); ok {
+				var release tracers.StateReleaseFunc
+				parentBlock := w.eth.BlockChain().GetBlockByHash(parent.Hash())
+				nState, release, err = historicalBackend.StateAtBlock(context.Background(), parentBlock, ^uint64(0), nil, false, false)
+				state = state.Copy()
+				state.EnableWriteOnSharedStorage()
+				release()
+			}
 		}
-	}
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		state = nState
 	}
 	state.StartPrefetcher("miner")
 
@@ -1115,10 +1122,10 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 }
 
 // generateWork generates a sealing block based on the given parameters.
-func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int, error) {
+func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int, *environment, error) {
 	work, err := w.prepareWork(genParams)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer work.discard()
 	if work.gasPool == nil {
@@ -1130,7 +1137,7 @@ func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int
 		work.state.SetTxContext(tx.Hash(), work.tcount)
 		_, err := w.commitTransaction(work, tx)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to force-include tx: %s type: %d sender: %s nonce: %d, err: %w", tx.Hash(), tx.Type(), from, tx.Nonce(), err)
+			return nil, nil, nil, fmt.Errorf("failed to force-include tx: %s type: %d sender: %s nonce: %d, err: %w", tx.Hash(), tx.Type(), from, tx.Nonce(), err)
 		}
 		work.tcount++
 	}
@@ -1150,9 +1157,9 @@ func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int
 	}
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, work.unclelist(), work.receipts, genParams.withdrawals)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return block, totalFees(block, work.receipts), nil
+	return block, totalFees(block, work.receipts), work, nil
 }
 
 // commitWork generates several new sealing tasks based on the parent block
@@ -1283,14 +1290,15 @@ func (w *worker) getSealingEmptyBlock(parent common.Hash, timestamp uint64, coin
 	case <-w.exitCh:
 		return nil, nil, errors.New("miner closed")
 	default:
-		return w.generateWork(params)
+		block, fee, _, err := w.generateWork(params)
+		return block, fee, err
 	}
 }
 
 // getSealingBlock generates the sealing block based on the given parameters.
 // The generation result will be passed back via the given channel no matter
 // the generation itself succeeds or not.
-func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions types.Transactions, gasLimit *uint64) (*types.Block, *big.Int, error) {
+func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions types.Transactions, gasLimit *uint64) (*types.Block, *big.Int, *environment, error) {
 	req := &getWorkReq{
 		params: &generateParams{
 			timestamp:   timestamp,
@@ -1310,11 +1318,11 @@ func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase 
 	case w.getWorkCh <- req:
 		result := <-req.result
 		if result.err != nil {
-			return nil, nil, result.err
+			return nil, nil, nil, result.err
 		}
-		return result.block, result.fees, nil
+		return result.block, result.fees, result.env, nil
 	case <-w.exitCh:
-		return nil, nil, errors.New("miner closed")
+		return nil, nil, nil, errors.New("miner closed")
 	}
 }
 

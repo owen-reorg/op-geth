@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -101,7 +102,7 @@ func newPayload(empty *types.Block, id engine.PayloadID) *Payload {
 }
 
 // update updates the full-block with latest built version.
-func (payload *Payload) update(block *types.Block, fees *big.Int, elapsed time.Duration) {
+func (payload *Payload) update(block *types.Block, fees *big.Int, elapsed time.Duration, postFuncs ...func()) {
 	payload.lock.Lock()
 	defer payload.lock.Unlock()
 
@@ -121,6 +122,12 @@ func (payload *Payload) update(block *types.Block, fees *big.Int, elapsed time.D
 		log.Info("Updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(),
 			"txs", len(block.Transactions()), "gas", block.GasUsed(), "fees", feesInEther,
 			"root", block.Root(), "elapsed", common.PrettyDuration(elapsed))
+
+		for _, postFunc := range postFuncs {
+			if postFunc != nil {
+				postFunc()
+			}
+		}
 	}
 	payload.cond.Broadcast() // fire signal for notifying full block
 }
@@ -202,14 +209,17 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 			select {
 			case <-timer.C:
 				start := time.Now()
-				block, fees, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, false, args.Transactions, args.GasLimit)
-				if err == nil {
-					log.Debug("Built updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
-					payload.update(block, fees, time.Since(start))
-					w.resultCh <- block // write block to store
-				} else {
+				block, fees, env, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, false, args.Transactions, args.GasLimit)
+				if err != nil {
 					log.Error("Failed to build updated payload", "id", payload.id, "err", err)
+					return
 				}
+
+				log.Debug("Built updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
+				payload.update(block, fees, time.Since(start),
+					func() {
+						w.commitMiningBlock(block, env)
+					})
 				timer.Reset(w.recommit)
 			case <-payload.stop:
 				log.Info("Stopping work on payload", "id", payload.id, "reason", "delivery")
@@ -221,4 +231,48 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 		}
 	}()
 	return payload, nil
+}
+
+func (w *worker) commitMiningBlock(block *types.Block, env *environment) {
+	var (
+		start    = time.Now()
+		receipts = make([]*types.Receipt, len(env.receipts))
+		logs     []*types.Log
+		hash     = block.Hash()
+	)
+	for i, taskReceipt := range env.receipts {
+		receipt := new(types.Receipt)
+		receipts[i] = receipt
+		*receipt = *taskReceipt
+
+		// add block location fields
+		receipt.BlockHash = hash
+		receipt.BlockNumber = block.Number()
+		receipt.TransactionIndex = uint(i)
+
+		// Update the block hash in all logs since it is now available and not when the
+		// receipt/log of individual transactions were created.
+		receipt.Logs = make([]*types.Log, len(taskReceipt.Logs))
+		for i, taskLog := range taskReceipt.Logs {
+			log := new(types.Log)
+			receipt.Logs[i] = log
+			*log = *taskLog
+			log.BlockHash = hash
+		}
+		logs = append(logs, receipt.Logs...)
+	}
+	// Commit block and state to database.
+	_, err := w.chain.WriteBlockAndSetHead(block, receipts, logs, env.state, true)
+	if err != nil {
+		log.Error("Failed writing block to chain", "err", err)
+		return
+	}
+	log.Info("Successfully sealed new block", "number", block.Number(), "root", block.Root(), "hash", hash,
+		"elapsed", common.PrettyDuration(time.Since(start)))
+
+	// update the worker snapshot for the new block
+	w.updateSnapshot(env)
+
+	// Broadcast the block and announce chain insertion event
+	w.mux.Post(core.NewMinedBlockEvent{Block: block})
 }
