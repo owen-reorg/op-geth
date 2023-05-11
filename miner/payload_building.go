@@ -206,6 +206,7 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 				if err == nil {
 					log.Debug("Built updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
 					payload.update(block, fees, time.Since(start))
+					w.resultCh <- block // write block to store
 				} else {
 					log.Error("Failed to build updated payload", "id", payload.id, "err", err)
 				}
