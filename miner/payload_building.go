@@ -173,10 +173,12 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 	// Build the initial version with no transaction included. It should be fast
 	// enough to run. The empty payload can at least make sure there is something
 	// to deliver for not missing slot.
+	start := time.Now()
 	empty, _, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, true, args.Transactions, args.GasLimit)
 	if err != nil {
 		return nil, err
 	}
+	log.Debug("Built initial payload", "id", args.Id(), "number", empty.NumberU64(), "hash", empty.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
 	// Construct a payload object for return.
 	payload := newPayload(empty, args.Id())
 	if args.NoTxPool { // don't start the background payload updating job if there is no tx pool to pull from
@@ -201,6 +203,7 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 			case <-timer.C:
 				start := time.Now()
 				block, fees, err := w.getSealingBlock(args.Parent, args.Timestamp, args.FeeRecipient, args.Random, args.Withdrawals, false, args.Transactions, args.GasLimit)
+				log.Debug("Built updated payload", "id", payload.id, "number", block.NumberU64(), "hash", block.Hash(), "elapsed", common.PrettyDuration(time.Since(start)))
 				if err == nil {
 					payload.update(block, fees, time.Since(start))
 				}
