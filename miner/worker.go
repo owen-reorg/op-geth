@@ -797,25 +797,20 @@ func (w *worker) resultLoop() {
 func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase common.Address) (*environment, error) {
 	// Retrieve the parent state to execute on top and start a prefetcher for
 	// the miner to speed block sealing up a bit.
-	pendingBlock, state := w.pending()
-	if state == nil || pendingBlock == nil || pendingBlock.Root() != parent.Root {
-		log.Debug("worker snapshot mismatch, falling back to chain state", "state_root", parent.Root)
-		nState, err := w.chain.StateAt(parent.Root)
-		if err != nil && w.chainConfig.Optimism != nil { // Allow the miner to reorg its own chain arbitrarily deep
-			if historicalBackend, ok := w.eth.(BackendWithHistoricalState); ok {
-				var release tracers.StateReleaseFunc
-				parentBlock := w.eth.BlockChain().GetBlockByHash(parent.Hash())
-				nState, release, err = historicalBackend.StateAtBlock(context.Background(), parentBlock, ^uint64(0), nil, false, false)
-				state = state.Copy()
-				state.EnableWriteOnSharedStorage()
-				release()
-			}
+	state, err := w.chain.StateAt(parent.Root)
+	if err != nil && w.chainConfig.Optimism != nil { // Allow the miner to reorg its own chain arbitrarily deep
+		if historicalBackend, ok := w.eth.(BackendWithHistoricalState); ok {
+			var release tracers.StateReleaseFunc
+			parentBlock := w.eth.BlockChain().GetBlockByHash(parent.Hash())
+			state, release, err = historicalBackend.StateAtBlock(context.Background(), parentBlock, ^uint64(0), nil, false, false)
+			state = state.Copy()
+			release()
 		}
-		if err != nil {
-			return nil, err
-		}
-		state = nState
 	}
+	if err != nil {
+		return nil, err
+	}
+	state.EnableWriteOnSharedStorage()
 	state.StartPrefetcher("miner")
 
 	// Note the passed coinbase may be different with header.Coinbase.
