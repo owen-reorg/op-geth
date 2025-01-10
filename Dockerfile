@@ -6,18 +6,25 @@ ARG BUILDNUM=""
 # Build Geth in a stock Go builder container
 FROM golang:1.21-alpine as builder
 
-RUN apk add --no-cache build-base libc-dev
-RUN apk add --no-cache gcc musl-dev linux-headers git
+RUN apk add --no-cache build-base libc-dev gcc musl-dev linux-headers git
 
-# Get dependencies - will also be cached if we won't change go.mod/go.sum
-COPY go.mod /go-ethereum/
-COPY go.sum /go-ethereum/
-RUN cd /go-ethereum && go mod download
+# Create and set working directory
+WORKDIR /go-ethereum
 
-ADD . /go-ethereum
+# Cache go mod download
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Cache build dependencies
+COPY build/ci.go build/
+COPY cmd/geth cmd/geth/
+
+# Copy rest of the source code
+COPY . .
+
 ENV CGO_CFLAGS="-O -D__BLST_PORTABLE__"
 ENV CGO_CFLAGS_ALLOW="-O -D__BLST_PORTABLE__"
-RUN cd /go-ethereum && go run build/ci.go install -static ./cmd/geth
+RUN go run build/ci.go install -static ./cmd/geth
 
 # Pull Geth into a second stage deploy alpine container
 FROM alpine:latest
